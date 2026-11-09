@@ -1,0 +1,99 @@
+# Build an unsigned IPA for Sideloadly / AltStore (free Apple ID, 7-day re-sign).
+# Make this repository PUBLIC so GitHub Actions macOS minutes are free for public repos.
+#
+# macos-14 runners were removed on 2026-11-02. macos-15's default toolchain
+# is /Applications/Xcode.app (currently Xcode 16.4). Do not prefer
+# Xcode_16.2.app: that older copy is still installed and would hide the default.
+#
+# Usage: Actions → "Build unsigned IPA" → Run workflow → download artifact.
+
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "AirPodsMouseBridge/**"
+      - "project.yml"
+      - ".github/workflows/build-ipa.yml"
+
+jobs:
+  build:
+    name: XcodeGen + unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          echo "Installed Xcode apps:"
+          ls -d /Applications/Xcode*.app
+          if [ ! -d /Applications/Xcode.app ]; then
+            echo "::error::/Applications/Xcode.app (the runner default) was not found"
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no code signing)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project AirPodsMouseBridge.xcodeproj \
+            -scheme AirPodsMouseBridge \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP=$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::.app not found"
+            find build/DerivedData -name "*.app" | head -20
+            exit 1
+          fi
+          echo "Packaging: $APP"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          (
+            cd build
+            zip -qry AirPodsMouseBridge-unsigned.ipa Payload
+          )
+          ls -lh build/AirPodsMouseBridge-unsigned.ipa
+          # Sideloadly needs Payload/<Name>.app at the archive root.
+          unzip -l build/AirPodsMouseBridge-unsigned.ipa | head -20
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirPodsMouseBridge-unsigned-ipa
+          path: build/AirPodsMouseBridge-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
